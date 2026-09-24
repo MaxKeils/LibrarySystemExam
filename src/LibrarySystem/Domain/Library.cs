@@ -4,17 +4,20 @@ namespace LibrarySystem;
 
 public class Library
 {
-    private const int BorrowLimit = 3;
-
+    private readonly object _ownerToken = new();
     private readonly List<Book> _books = new();
     private readonly List<Reader> _readers = new();
     private readonly Dictionary<Book, Reader> _loans = new();
+    private readonly BorrowingPolicy _borrowingPolicy;
 
     public ReadOnlyCollection<Book> Books { get; }
     public ReadOnlyCollection<Reader> Readers { get; }
+    public event EventHandler<LoanEventArgs>? BookBorrowed;
+    public event EventHandler<LoanEventArgs>? BookReturned;
 
-    public Library()
+    public Library(BorrowingPolicy? borrowingPolicy = null)
     {
+        _borrowingPolicy = borrowingPolicy ?? BorrowingPolicies.MaxConcurrentBooks(3);
         Books = _books.AsReadOnly();
         Readers = _readers.AsReadOnly();
     }
@@ -22,13 +25,13 @@ public class Library
     public void AddBook(Book book)
     {
         ArgumentNullException.ThrowIfNull(book);
-        if (book.OwningLibrary is not null)
+        if (book.OwnerToken is not null)
         {
             throw new InvalidOperationException("Книга уже добавлена в библиотеку");
         }
 
         _books.Add(book);
-        book.OwningLibrary = this;
+        book.OwnerToken = _ownerToken;
     }
 
     public void RegisterReader(Reader reader)
@@ -44,32 +47,45 @@ public class Library
 
     public bool BorrowBook(Reader reader, Book book)
     {
-        if (!_readers.Contains(reader) || !ReferenceEquals(book.OwningLibrary, this) || _loans.ContainsKey(book))
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(book);
+
+        if (!_readers.Contains(reader) || !ReferenceEquals(book.OwnerToken, _ownerToken) || _loans.ContainsKey(book))
         {
             return false;
         }
 
-        if (_loans.Values.Count(borrower => ReferenceEquals(borrower, reader)) >= BorrowLimit)
+        var activeLoanCount = _loans.Values.Count(borrower => ReferenceEquals(borrower, reader));
+        if (!_borrowingPolicy(reader, book, activeLoanCount))
         {
             return false;
         }
 
         _loans.Add(book, reader);
+        book.IsAvailable = false;
+        BookBorrowed?.Invoke(this, new LoanEventArgs(book, reader));
         return true;
     }
 
     public bool ReturnBook(Reader reader, Book book)
     {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(book);
+
         if (!_loans.TryGetValue(book, out var borrower) || !ReferenceEquals(borrower, reader))
         {
             return false;
         }
 
-        return _loans.Remove(book);
+        _loans.Remove(book);
+        book.IsAvailable = true;
+        BookReturned?.Invoke(this, new LoanEventArgs(book, reader));
+        return true;
     }
 
     public Reader? GetBorrower(Book book)
     {
+        ArgumentNullException.ThrowIfNull(book);
         return _loans.TryGetValue(book, out var reader) ? reader : null;
     }
 
